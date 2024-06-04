@@ -10,9 +10,10 @@
   },
   "dependencies": {
     "autoprefixer": "^10.4.13",
-    "axios": "^1.2.2",
+    "axios": "^1.7.2",
     "date-fns": "^2.29.3",
     "postcss": "^8.4.21",
+    "razorpay": "^2.9.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.6.2",

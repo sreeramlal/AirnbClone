@@ -9,39 +9,11 @@ const Booking = require('./models/Booking.js');
 const cookieParser = require('cookie-parser');
 const imageDownloader = require('image-downloader');
 const multer = require('multer');
+const Razorpay = require('razorpay');
+
 const fs = require('fs');
-
-//---------------------------------------------------------------------------------------
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3'); //image s3
-const mime = require('mime-types'); //imagse s3
-const bucket = 'dawid-booking-app'; // image s3
-app.use('/uploads', express.static(__dirname + '/uploads')); // image s3
-
-
-async function uploadToS3(path, originalFilename, mimetype) { // image s3
-  const client = new S3Client({
-    region: 'us-east-1',
-    credentials: {
-      accessKeyId: process.env.S3_ACCESS_KEY,
-      secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
-    },
-  });
-
-  const parts = originalFilename.split('.');  //image s3
-  const ext = parts[parts.length - 1];
-  const newFilename = Date.now() + '.' + ext;
-  await client.send(new PutObjectCommand({
-    Bucket: bucket,
-    Body: fs.readFileSync(path),
-    Key: newFilename,
-    ContentType: mimetype,
-    ACL: 'public-read',
-  }));
-  return `https://${bucket}.s3.amazonaws.com/${newFilename}`;
-}
-//---------------------------------------------------------------------------------------
-
 require('dotenv').config();
+
 const app = express();
 
 const bcryptSalt = bcrypt.genSaltSync(10);
@@ -57,7 +29,26 @@ app.use(cors({
   credentials: true, 
 }));
 
+// Configure Cloudinary
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Configure multer-storage-cloudinary
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'uploads', // optional, defaults to 'auto'
+    allowed_formats: ['jpg', 'png'],
+  },
+});
+
+const upload = multer({ storage });
 
 function getUserDataFromReq(req) {
   return new Promise((resolve, reject) => {
@@ -71,6 +62,7 @@ function getUserDataFromReq(req) {
 app.get('/api/test', (req, res) => {
   mongoose.connect(process.env.MONGO_URL);
   res.json('test ok');
+    
 });
 
 app.post('/api/register', async (req, res) => {
@@ -136,18 +128,14 @@ app.post('/api/upload-by-link', async (req, res) => {
     url: link,
     dest: '/tmp/' + newName,
   });
-  const url = await uploadToS3('/tmp/' + newName, newName, mime.lookup('/tmp/' + newName));
-  res.json(url);
+  const result = await cloudinary.uploader.upload('/tmp/' + newName);
+  fs.unlinkSync('/tmp/' + newName);
+  res.json(result.secure_url);
 });
 
-const photosMiddleware = multer({ dest: '/tmp' });
-app.post('/api/upload', photosMiddleware.array('photos', 100), async (req, res) => {
-  const uploadedFiles = [];
-  for (let i = 0; i < req.files.length; i++) {
-    const { path, originalname, mimetype } = req.files[i];
-    const url = await uploadToS3(path, originalname, mimetype);
-    uploadedFiles.push(url);
-  }
+const photosMiddleware = multer({ storage });
+app.post('/api/upload', photosMiddleware.array('photos', 100), (req, res) => {
+  const uploadedFiles = req.files.map(file => file.path);
   res.json(uploadedFiles);
 });
 
@@ -168,7 +156,6 @@ app.post('/api/places', (req, res) => {
     res.json(placeDoc);
   });
 });
-
 app.get('/api/user-places', (req, res) => {
   mongoose.connect(process.env.MONGO_URL);
   const { token } = req.cookies;
@@ -177,7 +164,7 @@ app.get('/api/user-places', (req, res) => {
     res.json(await Place.find({ owner: id }));
   });
 });
-
+ 
 app.get('/api/places/:id', async (req, res) => {
   mongoose.connect(process.env.MONGO_URL);
   const { id } = req.params;
@@ -230,6 +217,54 @@ app.get('/api/bookings', async (req, res) => {
   mongoose.connect(process.env.MONGO_URL);
   const userData = await getUserDataFromReq(req);
   res.json(await Booking.find({ user: userData.id }).populate('place'));
+});
+
+// Add the payment route
+ 
+app.post('/api/createOrder', async (req, res) => {
+  try {
+      const { amount, name, description } = req.body;
+      
+      console.log("Request to create order received:", { amount, name, description });
+
+      const instance = new Razorpay({
+          key_id: process.env.RAZORPAY_KEY_ID,
+          key_secret: process.env.RAZORPAY_KEY_SECRET,
+      });
+
+      const options = {
+          amount: amount * 100, // amount in the smallest currency unit
+          currency: "INR",
+          receipt: `receipt_order_${Math.floor(Math.random() * 1000000)}`,
+          payment_capture: 1,
+      };
+
+      console.log("Creating order with options:", options);
+
+      const order = await instance.orders.create(options);
+
+      if (!order) {
+          console.error("Order creation failed");
+          return res.status(500).send("Some error occurred");
+      }
+
+      console.log("Order created successfully:", order);
+
+      res.json({
+          success: true,
+          key_id: process.env.RAZORPAY_KEY_ID,
+          amount: order.amount,
+          product_name: name,
+          description: description,
+          order_id: order.id,
+          contact: "", // Add default or retrieved contact info
+          name: "", // Add default or retrieved user name
+          email: "" // Add default or retrieved email
+      });
+  } catch (error) {
+      console.error("Error creating order:", error);
+      res.status(500).send(error.message);
+  }
 });
 
 app.listen(4000);
